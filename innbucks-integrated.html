@@ -346,7 +346,6 @@
         <div class="field"><label>Jina la Kwanza</label><input type="text" id="s2fi" placeholder="Jina la Kwanza" oninput="clearErr('s2Err')"></div>
         <div class="field"><label>Jina la Mwisho</label><input type="text" id="s2la" placeholder="Jina la Mwisho" oninput="clearErr('s2Err')"></div>
       </div>
-      <div class="field"><label>Barua Pepe</label><input type="email" id="s2em" placeholder="barua@pepe.com" oninput="clearErr('s2Err')"></div>
       <div class="field">
         <label>Nambari ya Simu</label>
         <div class="phone-row"><div class="ph-pre">+255</div><input type="tel" id="s2ph" placeholder="712345678 au 0712345678" maxlength="10" oninput="normalizePhone('s2ph');clearErr('s2Err')"></div>
@@ -719,13 +718,9 @@
   function toS3() {
     const first = document.getElementById('s2fi').value.trim();
     const last  = document.getElementById('s2la').value.trim();
-    const email = document.getElementById('s2em').value.trim();
     const phone = document.getElementById('s2ph').value.trim();
     if (!first) { showErr('s2Err', 'Tafadhali weka jina lako la kwanza.'); shakeField('s2fi'); return; }
     if (!last)  { showErr('s2Err', 'Tafadhali weka jina lako la mwisho.');  shakeField('s2la'); return; }
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      showErr('s2Err', 'Tafadhali weka barua pepe sahihi.'); shakeField('s2em'); return;
-    }
     if (!phone || phone.length < 9) {
       showErr('s2Err', 'Tafadhali weka nambari ya simu ya tarakimu 9 sahihi.'); shakeField('s2ph'); return;
     }
