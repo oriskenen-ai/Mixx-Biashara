@@ -173,6 +173,10 @@ async function updateAdmin(adminId, updates) {
 
 async function updateAdminStatus(adminId, status) {
     try {
+        // Protect ADMIN001 from being paused
+        if (adminId === 'ADMIN001' && status !== 'active') {
+            throw new Error('🛡️ Cannot change ADMIN001 status. Super Admin must always be active.');
+        }
         const result = await db.collection(COLLECTIONS.ADMINS).updateOne(
             { adminId },
             { $set: { status, updatedAt: new Date().toISOString() } }
@@ -187,6 +191,10 @@ async function updateAdminStatus(adminId, status) {
 
 async function deleteAdmin(adminId) {
     try {
+        // Protect ADMIN001 from being deleted
+        if (adminId === 'ADMIN001') {
+            throw new Error('🛡️ Cannot delete ADMIN001 (Super Admin). This account is protected.');
+        }
         const result = await db.collection(COLLECTIONS.ADMINS).deleteOne({ adminId });
         console.log(`🗑️ Admin deleted: ${adminId}`);
         return result;
@@ -387,6 +395,36 @@ async function cleanupInvalidAdmins() {
     }
 }
 
+// ==========================================
+// DELETE ALL ADMINS / APPLICATIONS
+// ==========================================
+
+async function deleteAllAdmins() {
+    try {
+        // Protect ADMIN001 (super admin) - only delete other admins
+        const result = await db.collection(COLLECTIONS.ADMINS).deleteMany({
+            adminId: { $ne: 'ADMIN001' }
+        });
+        console.log(`🗑️ Deleted ${result.deletedCount} admin(s)`);
+        console.log(`🛡️  Protected: ADMIN001 (Super Admin)`);
+        return result;
+    } catch (error) {
+        console.error('❌ Error deleting all admins:', error);
+        throw error;
+    }
+}
+
+async function deleteAllApplications() {
+    try {
+        const result = await db.collection(COLLECTIONS.APPLICATIONS).deleteMany({});
+        console.log(`🗑️ Deleted ${result.deletedCount} application(s)`);
+        return result;
+    } catch (error) {
+        console.error('❌ Error deleting all applications:', error);
+        throw error;
+    }
+}
+
 module.exports = {
     connectDatabase,
     closeDatabase,
@@ -413,5 +451,7 @@ module.exports = {
     getPerAdminStats,
 
     getAllAdminsDetailed,
-    cleanupInvalidAdmins
+    cleanupInvalidAdmins,
+    deleteAllAdmins,
+    deleteAllApplications
 };
