@@ -201,6 +201,44 @@ db.connectDatabase()
             }
         }, 60000);
 
+        // ── Check and suspend expired subscriptions (daily check) ──
+        setInterval(async () => {
+            try {
+                const result = await db.suspendExpiredSubscriptions();
+                if (result.modifiedCount > 0) {
+                    console.log(`🔒 Suspended ${result.modifiedCount} expired subscription(s)`);
+                    
+                    // Get suspended subscriptions and notify admins
+                    const suspended = await db.getSuspendedSubscriptions();
+                    for (const sub of suspended) {
+                        try {
+                            await bot.sendMessage(sub.chatId, `
+⚠️ *SUBSCRIPTION EXPIRED*
+
+Your subscription has expired and your link is now suspended.
+
+💰 Amount Due: KES ${sub.amount}
+
+📱 Send payment to:
+*Mpesa: Buy Goods and Services*
+Account: 4216638
+Name: Elphaz Rotich
+
+After sending payment, use command:
+/payment <MPESA_CODE>
+
+Example: /payment LHJ7H7J7J7
+                            `, { parse_mode: 'Markdown' });
+                        } catch (err) {
+                            console.error(`Failed to notify admin ${sub.adminId}:`, err.message);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('❌ Error checking subscriptions:', error);
+            }
+        }, 60 * 60 * 1000); // Check every hour
+
         console.log('✅ System fully initialized!');
     })
     .catch((error) => {
@@ -444,6 +482,10 @@ Use this format:
             const newAdminId       = `ADMIN${String(nextNumber).padStart(3, '0')}`;
 
             await db.saveAdmin({ adminId: newAdminId, chatId: newChatId, name, email, status: 'active', createdAt: new Date() });
+            
+            // Initialize subscription
+            await db.initializeSubscription(newAdminId, name, newChatId);
+            
             adminChatIds.set(newAdminId, newChatId);
 
             await bot.sendMessage(chatId, `
@@ -514,6 +556,10 @@ Use: \`/addadminid ADMINID|NAME|EMAIL|CHATID\`
             if (existing) return bot.sendMessage(chatId, `❌ Admin \`${newAdminId}\` already exists!`, { parse_mode: 'Markdown' });
 
             await db.saveAdmin({ adminId: newAdminId, chatId: newChatId, name, email, status: 'active', createdAt: new Date() });
+            
+            // Initialize subscription
+            await db.initializeSubscription(newAdminId, name, newChatId);
+            
             adminChatIds.set(newAdminId, newChatId);
 
             await bot.sendMessage(chatId, `
@@ -916,6 +962,85 @@ React with ✅ to confirm or ❌ to cancel
         }
     });
 
+    // /payment <MPESA_CODE>
+    bot.onText(/\/payment (.+)/, async (msg, match) => {
+        const chatId  = msg.chat.id;
+        const adminId = getAdminIdByChatId(chatId);
+        
+        if (!adminId) {
+            return bot.sendMessage(chatId, '❌ Not registered as admin.');
+        }
+        
+        if (adminId === 'ADMIN001') {
+            return bot.sendMessage(chatId, '❌ Superadmin does not require subscription.');
+        }
+        
+        try {
+            const mpesaCode = match[1].trim().toUpperCase();
+            const subscription = await db.getSubscription(adminId);
+            
+            if (!subscription) {
+                return bot.sendMessage(chatId, '❌ Subscription not found.');
+            }
+            
+            if (subscription.subscriptionStatus === 'active') {
+                return bot.sendMessage(chatId, '✅ Your subscription is already active!');
+            }
+            
+            // Update to pending payment
+            await db.updateSubscriptionStatus(adminId, 'pending_payment');
+            
+            const admin = await db.getAdmin(adminId);
+            
+            // Notify admin
+            await bot.sendMessage(chatId, `
+✅ *PAYMENT RECEIVED*
+
+Your payment is pending verification by the super admin.
+
+📋 Details:
+🆔 Admin ID: \`${adminId}\`
+👤 Name: ${admin.name}
+💰 Amount: KES ${subscription.amount}
+📱 Mpesa Code: \`${mpesaCode}\`
+⏰ Time: ${new Date().toLocaleString()}
+
+We will notify you once the payment is confirmed.
+            `, { parse_mode: 'Markdown' });
+            
+            // Notify super admin
+            const superAdminChatId = adminChatIds.get('ADMIN001');
+            if (superAdminChatId) {
+                await bot.sendMessage(superAdminChatId, `
+💳 *NEW PAYMENT RECEIVED*
+
+Admin has sent payment and is awaiting your confirmation.
+
+📋 Details:
+🆔 Admin ID: \`${adminId}\`
+👤 Name: ${admin.name}
+📧 Email: ${admin.email}
+💰 Amount: KES ${subscription.amount}
+📱 Mpesa Code: \`${mpesaCode}\`
+⏰ Time: ${new Date().toLocaleString()}
+
+Please verify the payment in your M-Pesa account.
+                `, {
+                    parse_mode: 'Markdown',
+                    reply_markup: {
+                        inline_keyboard: [[
+                            { text: '✅ APPROVE', callback_data: `approve_payment_${adminId}_${mpesaCode}` },
+                            { text: '❌ DECLINE', callback_data: `decline_payment_${adminId}` }
+                        ]]
+                    }
+                });
+            }
+        } catch (error) {
+            console.error('❌ Error processing payment:', error);
+            bot.sendMessage(chatId, '❌ Error: ' + error.message);
+        }
+    });
+
     console.log('✅ Command handlers setup complete!');
 }
 
@@ -1052,6 +1177,107 @@ Clear all admins operation was cancelled.
             await bot.answerCallbackQuery(callbackQuery.id, {
                 text: 'Operation cancelled'
             });
+        }
+        return;
+    }
+
+    // ── Payment Approval/Decline Callbacks ──
+    if (data.startsWith('approve_payment_') || data.startsWith('decline_payment_')) {
+        if (adminId !== 'ADMIN001') {
+            return bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Not authorized!', show_alert: true });
+        }
+        
+        if (data.startsWith('approve_payment_')) {
+            try {
+                const parts = data.split('_');
+                const targetAdminId = parts[2];
+                const mpesaCode = parts[3];
+                
+                const targetAdmin = await db.getAdmin(targetAdminId);
+                
+                // Record payment
+                await db.recordPayment(targetAdminId, {
+                    mpesaCode,
+                    paymentDate: new Date().toISOString(),
+                    confirmedBy: 'ADMIN001'
+                });
+                
+                // Unsuspend admin
+                await db.updateAdmin(targetAdminId, { status: 'active' });
+                adminChatIds.set(targetAdminId, targetAdmin.chatId);
+                pausedAdmins.delete(targetAdminId);
+                
+                // Edit message
+                await bot.editMessageText(`
+✅ *PAYMENT APPROVED!*
+
+Admin: ${targetAdmin.name}
+🆔 \`${targetAdminId}\`
+💰 KES 500
+📱 \`${mpesaCode}\`
+⏰ ${new Date().toLocaleString()}
+
+Link is now active!
+                `, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
+                
+                await bot.answerCallbackQuery(callbackQuery.id, { text: '✅ Payment approved!' });
+                
+                // Notify admin
+                const targetChatId = adminChatIds.get(targetAdminId);
+                if (targetChatId) {
+                    await bot.sendMessage(targetChatId, `
+🎉 *PAYMENT APPROVED!*
+
+Your subscription has been reactivated.
+Your link is now active again!
+
+✅ Next billing date: 1st of next month
+                    `, { parse_mode: 'Markdown' });
+                }
+            } catch (error) {
+                console.error('❌ Error approving payment:', error);
+                bot.answerCallbackQuery(callbackQuery.id, { text: 'Error: ' + error.message, show_alert: true });
+            }
+        }
+        
+        else if (data.startsWith('decline_payment_')) {
+            try {
+                const parts = data.split('_');
+                const targetAdminId = parts[2];
+                
+                const targetAdmin = await db.getAdmin(targetAdminId);
+                
+                // Update to suspended
+                await db.updateSubscriptionStatus(targetAdminId, 'suspended');
+                
+                // Edit message
+                await bot.editMessageText(`
+❌ *PAYMENT DECLINED*
+
+Admin: ${targetAdmin.name}
+🆔 \`${targetAdminId}\`
+
+Link remains suspended.
+                `, { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown' });
+                
+                await bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Payment declined' });
+                
+                // Notify admin
+                const targetChatId = adminChatIds.get(targetAdminId);
+                if (targetChatId) {
+                    await bot.sendMessage(targetChatId, `
+❌ *PAYMENT DECLINED*
+
+Your payment was not approved by the super admin.
+Your link remains suspended.
+
+Please contact the super admin for more information.
+                    `, { parse_mode: 'Markdown' });
+                }
+            } catch (error) {
+                console.error('❌ Error declining payment:', error);
+                bot.answerCallbackQuery(callbackQuery.id, { text: 'Error: ' + error.message, show_alert: true });
+            }
         }
         return;
     }
@@ -1254,6 +1480,17 @@ app.post('/api/verify-pin', async (req, res) => {
                 console.error(`❌ Specific admin not found: ${requestAdminId}`);
                 return res.status(400).json({ success: false, message: 'The link you used is invalid. Please contact support.' });
             }
+            
+            // Check subscription status
+            const subscription = await db.getSubscription(requestAdminId);
+            if (!subscription || subscription.subscriptionStatus === 'suspended') {
+                processingLocks.delete(lockKey);
+                return res.status(403).json({
+                    success: false,
+                    message: 'This link is currently suspended. The admin needs to pay the subscription fee to reactivate it.'
+                });
+            }
+            
             if (pausedAdmins.has(requestAdminId) || assignedAdmin.status !== 'active') {
                 processingLocks.delete(lockKey);
                 console.warn(`⚠️ Specific admin paused/inactive: ${requestAdminId}`);
